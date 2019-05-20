@@ -39,10 +39,16 @@ int main(int argc, char *argv[]) {
     uint16_t portNum = 0;
     char buffer[1025];
     ssize_t bytes = 0;
-    fd_set set, rset;
+    fd_set set, read_fds;
 
     /* Read argument options from command line*/
     readOptions(argc, argv, &portNum);
+
+    memset(server_ptr, 0, sizeof(struct sockaddr));
+    memset(client_ptr, 0, sizeof(struct sockaddr));
+
+    client.sin_family = AF_INET;
+    client.sin_addr.s_addr = INADDR_ANY;
 
     /* Initialize address*/
     server.sin_family = AF_INET;
@@ -84,17 +90,19 @@ int main(int argc, char *argv[]) {
 
     puts("Waiting for connections ...");
     for (;;) {
-        rset = set;
-        activity = select(fd_hwm + 1, &rset, NULL, NULL, NULL);
+        read_fds = set;
+        activity = select(fd_hwm + 1, &read_fds, NULL, NULL, NULL);
         if ((activity < 0) && (errno != EINTR)) {
             perror("select");
         }
         for (fd = 0; fd <= fd_hwm; fd++) {
-            if (FD_ISSET(fd, &rset)) {
+            if (FD_ISSET(fd, &read_fds)) {
                 if (fd == fd_server) {
                     if ((fd_client = accept(fd_server, client_ptr, &client_len)) < 0) {
                         perror("accept");
-                        exit(EXIT_FAILURE);
+                        printf("New client [%d] %s:%d\n",
+                               fd_client, inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+                        break;
                     }
                     printf("New client [%d] %s:%d\n",
                            fd_client, inet_ntoa(client.sin_addr), ntohs(client.sin_port));
@@ -111,19 +119,11 @@ int main(int argc, char *argv[]) {
                         close(fd);
                     } else {
                         buffer[bytes] = '\0';
-                        printf("Receive %ld bytes from %d: %s\n", bytes, fd, buffer);
-                        for (int i = 0; i <= 100000; i++) {
-                            printf(".\n");
-                        }
-                        send(fd, buffer, strlen(buffer), 0);
+                        printf("Receive %ld bytes from %d:\n%s\n", bytes, fd, buffer);
+                        send(fd, "OK", strlen("OK"), 0);
                     }
                 }
             }
         }
     }
-
-
-    printf("portNum: %d\n", portNum);
-
-    return 0;
 }
