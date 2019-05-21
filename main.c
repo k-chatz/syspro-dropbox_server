@@ -6,6 +6,15 @@
 #include <errno.h>
 #include <zconf.h>
 #include <arpa/inet.h>
+#include <stdbool.h>
+#include <bits/types/sig_atomic_t.h>
+#include <signal.h>
+
+#define COLOR "\x1B[33m"
+#define RESET "\x1B[0m"
+
+volatile sig_atomic_t sig_int_quit_hup = 0;
+bool quit = false;
 
 void wrongOptionValue(char *opt, char *val) {
     fprintf(stderr, "\nWrong value [%s] for option '%s'\n", val, opt);
@@ -30,8 +39,16 @@ void readOptions(int argc, char **argv, uint16_t *portNum) {
     }
 }
 
+/**
+ * @Signal_handler
+ * Interupt or quit action*/
+void sig_int_quit_action(int signal) {
+    sig_int_quit_hup++;
+}
+
 int main(int argc, char *argv[]) {
     int opt = 1, fd_server = 0, fd_client = 0, activity = 0, fd_hwm = 0, fd = 0;
+    static struct sigaction quit_action;
     struct sockaddr_in server, client;
     struct sockaddr *server_ptr = (struct sockaddr *) &server;
     struct sockaddr *client_ptr = (struct sockaddr *) &client;
@@ -46,6 +63,14 @@ int main(int argc, char *argv[]) {
 
     memset(server_ptr, 0, sizeof(struct sockaddr));
     memset(client_ptr, 0, sizeof(struct sockaddr));
+
+    /* Set custom signal handler for SIGINT (^c) & SIGQUIT (^\) signals.*/
+    quit_action.sa_handler = sig_int_quit_action;
+    sigfillset(&(quit_action.sa_mask));
+    //quit_action.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &quit_action, NULL);
+    sigaction(SIGQUIT, &quit_action, NULL);
+    sigaction(SIGHUP, &quit_action, NULL);
 
     client.sin_family = AF_INET;
     client.sin_addr.s_addr = INADDR_ANY;
@@ -89,7 +114,14 @@ int main(int argc, char *argv[]) {
     FD_SET(fd_server, &set);
 
     puts("Waiting for connections ...");
-    for (;;) {
+    while (!quit) {
+
+        if (sig_int_quit_hup) {
+            sig_int_quit_hup--;
+            fprintf(stdout, COLOR"C[%d]: exiting ..."RESET"\n", getpid());
+            quit = true;
+        }
+
         read_fds = set;
         activity = select(fd_hwm + 1, &read_fds, NULL, NULL, NULL);
         if ((activity < 0) && (errno != EINTR)) {
@@ -100,8 +132,6 @@ int main(int argc, char *argv[]) {
                 if (fd == fd_server) {
                     if ((fd_client = accept(fd_server, client_ptr, &client_len)) < 0) {
                         perror("accept");
-                        printf("New client [%d] %s:%d\n",
-                               fd_client, inet_ntoa(client.sin_addr), ntohs(client.sin_port));
                         break;
                     }
                     printf("New client [%d] %s:%d\n",
