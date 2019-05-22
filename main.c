@@ -9,9 +9,15 @@
 #include <stdbool.h>
 #include <bits/types/sig_atomic_t.h>
 #include <signal.h>
+#include <netdb.h>
 
 #define COLOR "\x1B[33m"
 #define RESET "\x1B[0m"
+
+typedef struct client {
+    struct in_addr ip;
+    in_port_t port;
+} Client;
 
 volatile sig_atomic_t sig_int_quit_hup = 0;
 bool quit = false;
@@ -47,19 +53,28 @@ void sig_int_quit_action(int signal) {
 }
 
 int main(int argc, char *argv[]) {
-    int opt = 1, fd_server = 0, fd_client = 0, activity = 0, fd_hwm = 0, fd = 0;
+    int opt = 1, fd_server = 0, fd_client = 0, activity = 0, fd_hwm = 0, fd = 0, hostname = 0;
+    void *buffer = NULL;
     static struct sigaction quit_action;
+    struct sockaddr *server_ptr = NULL, *client_ptr = NULL;
     struct sockaddr_in server, client;
-    struct sockaddr *server_ptr = (struct sockaddr *) &server;
-    struct sockaddr *client_ptr = (struct sockaddr *) &client;
-    socklen_t client_len;
+    struct hostent *host_entry;
+    char *ip = NULL, hostbuffer[256];
+    size_t socket_size = 0;
+    socklen_t st_len = 0;
+    socklen_t client_len = 0;
     uint16_t portNum = 0;
-    char buffer[1025];
     ssize_t bytes = 0;
     fd_set set, read_fds;
 
     /* Read argument options from command line*/
     readOptions(argc, argv, &portNum);
+
+    st_len = sizeof(socket_size);
+    client_len = sizeof(struct sockaddr);
+
+    server_ptr = (struct sockaddr *) &server;
+    client_ptr = (struct sockaddr *) &client;
 
     memset(server_ptr, 0, sizeof(struct sockaddr));
     memset(client_ptr, 0, sizeof(struct sockaddr));
@@ -73,18 +88,28 @@ int main(int argc, char *argv[]) {
     sigaction(SIGHUP, &quit_action, NULL);
 
     client.sin_family = AF_INET;
-    client.sin_addr.s_addr = INADDR_ANY;
+    //client.sin_addr.s_addr = htonl(INADDR_ANY);
 
     /* Initialize address*/
     server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_addr.s_addr = htonl(INADDR_ANY);
     server.sin_port = htons(portNum);
 
     /* Create socket*/
-    if ((fd_server = socket(AF_INET, SOCK_STREAM, 0)) <= 0) {
+    if ((fd_server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) <= 0) {
         perror("socket");
         exit(EXIT_FAILURE);
     }
+
+    hostname = gethostname(hostbuffer, sizeof(hostbuffer));
+
+    host_entry = gethostbyname(hostbuffer);
+
+    ip = inet_ntoa(*((struct in_addr *) host_entry->h_addr_list[0]));
+
+    getsockopt(fd_server, SOL_SOCKET, SO_RCVBUF, (void *) &socket_size, &st_len);
+
+    buffer = malloc(socket_size + 1);
 
     /* Config*/
     if (setsockopt(fd_server, SOL_SOCKET, SO_REUSEADDR, (char *) &opt, sizeof(opt)) < 0) {
@@ -98,8 +123,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    printf("Listener on port %d \n", portNum);
-
     /* Listen*/
     if (listen(fd_server, 3) < 0) {
         perror("listen");
@@ -111,9 +134,10 @@ int main(int argc, char *argv[]) {
     }
 
     FD_ZERO(&set);
+
     FD_SET(fd_server, &set);
 
-    puts("Waiting for connections ...");
+    printf("Waiting for connections on %s:%d ... \n", ip, portNum);
     while (!quit) {
 
         if (sig_int_quit_hup) {
@@ -123,10 +147,11 @@ int main(int argc, char *argv[]) {
         }
 
         read_fds = set;
-        activity = select(fd_hwm + 1, &read_fds, NULL, NULL, NULL);
-        if ((activity < 0) && (errno != EINTR)) {
+
+        if ((activity = select(fd_hwm + 1, &read_fds, NULL, NULL, NULL) < 0) && (errno != EINTR)) {
             perror("select");
         }
+
         for (fd = 0; fd <= fd_hwm; fd++) {
             if (FD_ISSET(fd, &read_fds)) {
                 if (fd == fd_server) {
@@ -134,24 +159,42 @@ int main(int argc, char *argv[]) {
                         perror("accept");
                         break;
                     }
-                    printf("New client [%d] %s:%d\n",
-                           fd_client, inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+                    printf("::Accept %s:%d on socket %d::\n",
+                           inet_ntoa(client.sin_addr),
+                           ntohs(client.sin_port),
+                           fd_client);
+
                     FD_SET(fd_client, &set);
                     if (fd_client > fd_hwm) {
                         fd_hwm = fd_client;
                     }
                 } else {
-                    if ((bytes = read(fd, buffer, sizeof(buffer))) == 0) {
+                    bytes = recv(fd_client, buffer, socket_size, 0);
+                    printf("::Receive %ld bytes from socket %d::\n", bytes, fd_client);
+                    if (bytes == 0) {
                         FD_CLR(fd, &set);
                         if (fd == fd_hwm) {
                             fd_hwm--;
                         }
                         close(fd);
-                    } else {
-                        buffer[bytes] = '\0';
-                        printf("Receive %ld bytes from %d:\n%s\n", bytes, fd, buffer);
+                    } else if (bytes > 0) {
+                        printf(COLOR"%s"RESET"\n", (char *) buffer);
+
+                        if (strncmp(buffer, "LOG_ON", 7) == 0) {
+                            printf("LOG_ON\n");
+                        } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
+                            printf("GET_CLIENTS\n");
+                        } else if (strncmp(buffer, "LOG_OFF", 7) == 0) {
+                            printf("LOG_OFF\n");
+                        } else {
+                            printf("UNKNOWN COMMAND\n");
+                        }
+
                         send(fd, "OK", strlen("OK"), 0);
+                    } else {
+                        perror("recv");
                     }
+
                 }
             }
         }
