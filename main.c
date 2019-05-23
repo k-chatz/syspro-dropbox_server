@@ -10,21 +10,22 @@
 #include <bits/types/sig_atomic_t.h>
 #include <signal.h>
 #include <netdb.h>
+#include "list.h"
 
 #define COLOR "\x1B[33m"
 #define RESET "\x1B[0m"
-#define MAX_CONNECTIONS 20
+#define MAX_OPEN_SESSIONS 20
 
-typedef struct con {
-    size_t size;
+typedef struct session {
+    size_t bytes;
     void *buffer;
     int chunks;
-} con;
+} Session;
 
 typedef struct client {
     in_addr_t ip;
     in_port_t port;
-} Client;
+} *Client;
 
 volatile sig_atomic_t sig_int_quit_hup = 0;
 bool quit = false;
@@ -63,16 +64,18 @@ int main(int argc, char *argv[]) {
     int opt = 1, fd_server = 0, fd_client = 0, activity = 0, fd_hwm = 0, fd = 0, hostname = 0;
     static struct sigaction quit_action;
     struct sockaddr *server_ptr = NULL, *client_ptr = NULL;
-    struct sockaddr_in server, client;
+    struct sockaddr_in server_in_addr, client_in_addr;
     struct hostent *host_entry;
     char *ip = NULL, hostbuffer[256];
-    con con_buffer[MAX_CONNECTIONS];
+    Session sessions[MAX_OPEN_SESSIONS];
     void *rcv_buffer = NULL;
     size_t socket_rcv_size = 0, socket_snd_size = 0;
     socklen_t st_rcv_len = 0, st_snd_len = 0, client_len = 0;
     uint16_t portNum = 0;
     ssize_t bytes = 0;
     fd_set set, read_fds;
+    Client new_client = NULL, client = NULL;
+    bool duplicate;
 
     /* Read argument options from command line*/
     readOptions(argc, argv, &portNum);
@@ -82,8 +85,8 @@ int main(int argc, char *argv[]) {
 
     client_len = sizeof(struct sockaddr);
 
-    server_ptr = (struct sockaddr *) &server;
-    client_ptr = (struct sockaddr *) &client;
+    server_ptr = (struct sockaddr *) &server_in_addr;
+    client_ptr = (struct sockaddr *) &client_in_addr;
 
     memset(server_ptr, 0, sizeof(struct sockaddr));
     memset(client_ptr, 0, sizeof(struct sockaddr));
@@ -96,13 +99,13 @@ int main(int argc, char *argv[]) {
     sigaction(SIGQUIT, &quit_action, NULL);
     sigaction(SIGHUP, &quit_action, NULL);
 
-    client.sin_family = AF_INET;
-    //client.sin_addr.s_addr = htonl(INADDR_ANY);
+    client_in_addr.sin_family = AF_INET;
+    //client_in_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     /* Initialize address*/
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = htonl(INADDR_ANY);
-    server.sin_port = htons(portNum);
+    server_in_addr.sin_family = AF_INET;
+    server_in_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    server_in_addr.sin_port = htons(portNum);
 
     /* Create socket*/
     if ((fd_server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) <= 0) {
@@ -134,7 +137,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* Bind socket*/
-    if (bind(fd_server, server_ptr, sizeof(server)) < 0) {
+    if (bind(fd_server, server_ptr, sizeof(server_in_addr)) < 0) {
         perror("bind");
         exit(EXIT_FAILURE);
     }
@@ -152,9 +155,14 @@ int main(int argc, char *argv[]) {
     FD_ZERO(&set);
     FD_SET(fd_server, &set);
 
-    for (int i = 0; i < MAX_CONNECTIONS; i++) {
-        con_buffer[i].buffer = NULL;
+    for (int i = 0; i < MAX_OPEN_SESSIONS; i++) {
+        sessions[i].buffer = NULL;
+        sessions[i].bytes = 0;
+        sessions[i].chunks = 0;
     }
+
+    List list = NULL;
+    listCreate(&list);
 
     printf("Waiting for connections on %s:%d ... \n", ip, portNum);
     while (!quit) {
@@ -171,41 +179,62 @@ int main(int argc, char *argv[]) {
             perror("select");
         }
 
-        for (fd = 0; fd <= fd_hwm && fd <= MAX_CONNECTIONS; fd++) {
+        for (fd = 0; fd <= fd_hwm; fd++) {
             if (FD_ISSET(fd, &read_fds)) {
                 if (fd == fd_server) {
                     if ((fd_client = accept(fd_server, client_ptr, &client_len)) < 0) {
                         perror("accept");
                         break;
                     }
-                    printf("\n::Accept %s:%d on socket %d::\n", inet_ntoa(client.sin_addr), ntohs(client.sin_port),
+                    printf("\n::Accept %s:%d on socket %d::\n", inet_ntoa(client_in_addr.sin_addr),
+                           ntohs(client_in_addr.sin_port),
                            fd_client);
                     FD_SET(fd_client, &set);
                     if (fd_client > fd_hwm) {
                         fd_hwm = fd_client;
                     }
-                    con_buffer[fd_client].buffer = malloc(1);
-                    con_buffer[fd_client].size = 1;
-                    con_buffer[fd_client].chunks = 0;
+                    if (fd_client <= MAX_OPEN_SESSIONS) {
+                        sessions[fd_client].buffer = malloc(1);
+                        sessions[fd_client].bytes = 1;
+                        sessions[fd_client].chunks = 0;
+                    } else {
+                        close(fd_client);
+                    }
                 } else {
                     bzero(rcv_buffer, socket_rcv_size);
                     bytes = recv(fd, rcv_buffer, socket_rcv_size, MSG_DONTWAIT);
-                    printf("::Receive %ld bytes from socket %d::\n", bytes, fd);
                     if (bytes == 0) {
+                        duplicate = false;
                         shutdown(fd_client, SHUT_RD);
 
-                        printf(COLOR"\n%s\n"RESET"\n", (char *) con_buffer[fd].buffer);
+                        printf("::%ld bytes were transferred into %d chunks on socket %d::\n", sessions[fd].bytes - 1,
+                               sessions[fd].chunks, fd);
+                        printf(COLOR"%s\n"RESET"\n", (char *) sessions[fd].buffer);
 
                         // TODO: Create command handler function.
-                        if (strncmp(con_buffer[fd].buffer, "LOG_ON", 6) == 0) {
+                        if (strncmp(sessions[fd].buffer, "LOG_ON", 6) == 0) {
                             printf("EXECUTE LOG_ON\n");
-                            send(fd, "+", 1, 0);
+                            new_client = malloc(sizeof(struct client));
+                            memcpy(new_client, sessions[fd].buffer + 6, sizeof(struct client));
+                            while ((client = listNext(list)) != NULL) {
+                                if (new_client->ip == client->ip && new_client->port == client->port) {
+                                    duplicate = true;
+                                }
+                            }
+                            if (!duplicate && listInsert(list, new_client)) {
+                                send(fd, "+", 1, 0);
+                            } else {
+                                fprintf(stderr, "not inserted!\n");
+                                send(fd, "-", 1, 0);
+                            }
+                            printf("\n::LOG_ON <%d, %d>::\n", ntohl(new_client->ip), ntohs(new_client->port));
+
                             shutdown(fd_client, SHUT_WR);
-                        } else if (strncmp(con_buffer[fd].buffer, "GET_CLIENTS", 11) == 0) {
+                        } else if (strncmp(sessions[fd].buffer, "GET_CLIENTS", 11) == 0) {
                             printf("EXECUTE GET_CLIENTS\n");
                             send(fd, "+", 1, 0);
                             shutdown(fd_client, SHUT_WR);
-                        } else if (strncmp(con_buffer[fd].buffer, "LOG_OFF", 7) == 0) {
+                        } else if (strncmp(sessions[fd].buffer, "LOG_OFF", 7) == 0) {
                             printf("EXECUTE LOG_OFF\n");
                             send(fd, "+", 1, 0);
                             shutdown(fd_client, SHUT_WR);
@@ -220,16 +249,16 @@ int main(int argc, char *argv[]) {
                             fd_hwm--;
                         }
                         close(fd);
-                        free(con_buffer[fd].buffer);
-                        con_buffer[fd].buffer = NULL;
+                        free(sessions[fd].buffer);
+                        sessions[fd].buffer = NULL;
                     } else if (bytes > 0) {
-                        size_t offset = con_buffer[fd].chunks ? con_buffer[fd].size - 1 : 0;
+                        size_t offset = sessions[fd].chunks ? sessions[fd].bytes - 1 : 0;
+                        sessions[fd].buffer = realloc(sessions[fd].buffer, sessions[fd].bytes + bytes - 1);
+                        strncpy(sessions[fd].buffer + offset, rcv_buffer, (size_t) bytes);
+                        sessions[fd].bytes += bytes;
+                        sessions[fd].chunks++;
+                        printf("::Receive %ld bytes from chunk %d on socket %d::\n", bytes, sessions[fd].chunks, fd);
                         printf(COLOR"%s"RESET"\n", (char *) rcv_buffer);
-                        con_buffer[fd].buffer = realloc(con_buffer[fd].buffer, con_buffer[fd].size + bytes - 1);
-                        strncpy(con_buffer[fd].buffer + offset, rcv_buffer, (size_t) bytes);
-                        con_buffer[fd].size += bytes;
-                        con_buffer[fd].chunks++;
-                        send(fd, "|", 1, 0);
                     } else {
                         perror("recv");
                     }
