@@ -64,7 +64,7 @@ void sig_int_quit_action(int signal) {
     sig_int_quit_hup++;
 }
 
-bool request_handler(int client_fd, void *buffer) {
+void request_handler(int client_fd, void *buffer) {
     bool found = false;
     Client c = NULL, client = NULL;
     unsigned int clients = 0;
@@ -72,53 +72,58 @@ bool request_handler(int client_fd, void *buffer) {
 
     if (strncmp(buffer, "LOG_ON", 6) == 0) {
         printf("EXECUTE LOG_ON\n");
-
         c = malloc(sizeof(struct client));
+        if (c == NULL) {
+            perror("malloc");
+        }
         memcpy(c, buffer + 6, sizeof(struct client));
-
         listSetCurrentToStart(list);
         while ((client = listNext(list)) != NULL) {
             if (c->ip == client->ip && c->port == client->port) {
                 found = true;
             }
         }
+        if (!found) {
+            if (listInsert(list, c)) {
+                listSetCurrentToStart(list);
+                while ((client = listNext(list)) != NULL) {
+                    if (!(c->ip == client->ip && c->port == client->port)) {
 
-        if (!found && listInsert(list, c)) {
-            listSetCurrentToStart(list);
+                        /* Create socket */
+                        if ((fd_client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
+                            perror("socket");
+                        }
+                        client_in_addr.sin_family = AF_INET;
+                        client_in_addr.sin_addr.s_addr = client->ip;
+                        client_in_addr.sin_port = client->port;
+
+                        printf("Connecting to host %s:%d in order to inform that client %s:%d is logged in ...\n",
+                               inet_ntoa(client_in_addr.sin_addr), ntohs(client_in_addr.sin_port),
+                               inet_ntoa(new_client_in_addr.sin_addr), ntohs(new_client_in_addr.sin_port)
+                        );
+
+                        /* Initiate connection */
+                        if (connect(fd_client, client_in_addr_ptr, sizeof(struct sockaddr)) < 0) {
+                            perror("connect");
+                        } else {
+                            printf("Connect to client %s:%d successfully!\n", inet_ntoa(client_in_addr.sin_addr),
+                                   ntohs(client_in_addr.sin_port));
+                            send(fd_client, "USER_ON", 7, 0);
+                            send(fd_client, c, sizeof(struct client), 0);
+                            close(fd_client);
+                        }
+                    }
+                }
+            } else {
+                send(client_fd, "ERROR_LOG_ON", 12, 0);
+                fprintf(stderr, "ERROR_LOG_ON\n");
+                free(c);
+            }
         } else {
-            fprintf(stderr, "not inserted!\n");
+            send(client_fd, "ALREADY_LOGGED_IN", 17, 0);
+            fprintf(stderr, "ALREADY_LOGGED_IN\n");
             free(c);
         }
-
-        while ((client = listNext(list)) != NULL) {
-            if (!(c->ip == client->ip && c->port == client->port)) {
-
-                /* Create socket */
-                if ((fd_client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-                    perror("socket");
-                }
-                client_in_addr.sin_family = AF_INET;
-                client_in_addr.sin_addr.s_addr = client->ip;
-                client_in_addr.sin_port = client->port;
-
-                printf("Connecting to host %s:%d in order to inform that client %s:%d is logged in ...\n",
-                       inet_ntoa(client_in_addr.sin_addr), ntohs(client_in_addr.sin_port),
-                       inet_ntoa(new_client_in_addr.sin_addr), ntohs(new_client_in_addr.sin_port)
-                );
-
-                /* Initiate connection */
-                if (connect(fd_client, client_in_addr_ptr, sizeof(struct sockaddr)) < 0) {
-                    perror("connect");
-                } else {
-                    printf("Connect to client %s:%d successfully!\n", inet_ntoa(client_in_addr.sin_addr),
-                           ntohs(client_in_addr.sin_port));
-                    send(fd_client, "USER_ON", 7, 0);
-                    send(fd_client, c, sizeof(struct client), 0);
-                    close(fd_client);
-                }
-            }
-        }
-        return true;
     } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
         printf("EXECUTE GET_CLIENTS\n");
         c = malloc(sizeof(struct client));
@@ -133,7 +138,6 @@ bool request_handler(int client_fd, void *buffer) {
             }
         }
         free(c);
-        return true;
     } else if (strncmp(buffer, "LOG_OFF", 7) == 0) {
         printf("EXECUTE LOG_OFF\n");
         c = malloc(sizeof(struct client));
@@ -178,16 +182,18 @@ bool request_handler(int client_fd, void *buffer) {
                     }
                 }
             } else {
+                fprintf(stderr, "ERROR_NOT_REMOVED\n");
                 send(client_fd, "ERROR_NOT_REMOVED", 17, 0);
             }
         } else {
+            fprintf(stderr, "ERROR_IP_PORT_NOT_FOUND_IN_LIST\n");
             send(client_fd, "ERROR_IP_PORT_NOT_FOUND_IN_LIST", 31, 0);
+            free(c);
         }
         free(c);
-        return true;
     } else {
-        printf("UNKNOWN COMMAND\n");
-        return false;
+        fprintf(stderr, "UNKNOWN_COMMAND\n");
+        send(client_fd, "UNKNOWN_COMMAND", 15, 0);
     }
 }
 
@@ -197,7 +203,7 @@ int main(int argc, char *argv[]) {
 
     struct hostent *host_entry;
 
-    Session sessions[MAX_OPEN_SESSIONS];
+    Session s[MAX_OPEN_SESSIONS];
     void *rcv_buffer = NULL;
     size_t socket_rcv_size = 0, socket_snd_size = 0;
     socklen_t st_rcv_len = 0, st_snd_len = 0, client_len = 0;
@@ -283,9 +289,9 @@ int main(int argc, char *argv[]) {
     FD_SET(fd_listen, &set);
 
     for (int i = 0; i < MAX_OPEN_SESSIONS; i++) {
-        sessions[i].buffer = NULL;
-        sessions[i].bytes = 0;
-        sessions[i].chunks = 0;
+        s[i].buffer = NULL;
+        s[i].bytes = 0;
+        s[i].chunks = 0;
     }
 
     listCreate(&list);
@@ -317,9 +323,9 @@ int main(int argc, char *argv[]) {
                         fd_max = fd_new_client;
                     }
                     if (fd_new_client <= MAX_OPEN_SESSIONS) {
-                        sessions[fd_new_client].buffer = malloc(1);
-                        sessions[fd_new_client].bytes = 1;
-                        sessions[fd_new_client].chunks = 0;
+                        s[fd_new_client].buffer = malloc(1);
+                        s[fd_new_client].bytes = 1;
+                        s[fd_new_client].chunks = 0;
                     } else {
                         close(fd_new_client);
                     }
@@ -328,33 +334,26 @@ int main(int argc, char *argv[]) {
                     bytes = recv(fd_active, rcv_buffer, socket_rcv_size, 0);
                     if (bytes == 0) {
                         printf("::%ld bytes were transferred into %d different chunks on socket %d::\n",
-                               sessions[fd_active].bytes - 1,
-                               sessions[fd_active].chunks, fd_active);
-                        printf(COLOR"%s\n"RESET"\n", (char *) sessions[fd_active].buffer);
-                        /* Handle request.*/
+                               s[fd_active].bytes - 1,
+                               s[fd_active].chunks, fd_active);
+                        printf(COLOR"%s\n"RESET"\n", (char *) s[fd_active].buffer);
                         shutdown(fd_new_client, SHUT_RD);
-                        if (request_handler(fd_new_client, sessions[fd_active].buffer)) {
-                            printf("Request complete successfully.\n");
-                        } else {
-                            fprintf(stderr, "Request error!\n");
-                            send(fd_active, "-", 1, 0);
-                        }
+                        request_handler(fd_new_client, s[fd_active].buffer);
                         shutdown(fd_new_client, SHUT_WR);
                         FD_CLR(fd_active, &set);
                         if (fd_active == fd_max) {
                             fd_max--;
                         }
                         close(fd_active);
-                        free(sessions[fd_active].buffer);
-                        sessions[fd_active].buffer = NULL;
+                        free(s[fd_active].buffer);
+                        s[fd_active].buffer = NULL;
                     } else if (bytes > 0) {
-                        size_t offset = sessions[fd_active].chunks ? sessions[fd_active].bytes - 1 : 0;
-                        sessions[fd_active].buffer = realloc(sessions[fd_active].buffer,
-                                                             sessions[fd_active].bytes + bytes - 1);
-                        strncpy(sessions[fd_active].buffer + offset, rcv_buffer, (size_t) bytes);
-                        sessions[fd_active].bytes += bytes;
-                        sessions[fd_active].chunks++;
-                        //printf("::Receive %ld bytes from chunk %d on socket %d::\n", bytes, sessions[fd_active].chunks, fd_active);
+                        size_t offset = s[fd_active].chunks ? s[fd_active].bytes - 1 : 0;
+                        s[fd_active].buffer = realloc(s[fd_active].buffer, s[fd_active].bytes + bytes - 1);
+                        memcpy(s[fd_active].buffer + offset, rcv_buffer, (size_t) bytes);
+                        s[fd_active].bytes += bytes;
+                        s[fd_active].chunks++;
+                        //printf("::Receive %ld bytes from chunk %d on socket %d::\n", bytes, s[fd_active].chunks, fd_active);
                         //printf(COLOR"%s"RESET"\n", (char *) rcv_buffer);
                     } else {
                         perror("recv");
@@ -365,6 +364,5 @@ int main(int argc, char *argv[]) {
             }
         }
     }
-
     listDestroy(&list);
 }
