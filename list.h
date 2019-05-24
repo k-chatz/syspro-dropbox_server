@@ -16,6 +16,8 @@ bool listRemove(List, void *);
 
 void listSetCurrentToStart(List list);
 
+unsigned int listGetLength(List list);
+
 void *listNext(List);
 
 void listDestroy(List *list);

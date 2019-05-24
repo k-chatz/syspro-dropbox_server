@@ -9,6 +9,7 @@ typedef void *pointer;
 
 struct List {
     pointer identifier;
+    unsigned int length;
     nodePtr start;
     nodePtr current;
 };
@@ -54,6 +55,7 @@ void listCreate(List *list) {
     assert(*list == NULL);
     *list = (List) malloc(sizeof(struct List));
     if ((*list) != NULL) {
+        (*list)->length = 0;
         (*list)->start = NULL;
         (*list)->current = NULL;
     }
@@ -73,6 +75,7 @@ bool listInsert(List list, pointer data) {
         newNode->left = NULL;
         if (!l_isEmpty(list))
             list->start->left = newNode;
+        list->length++;
         list->start = newNode;
         list->current = newNode;
         return true;
@@ -102,6 +105,7 @@ bool listRemove(List list, pointer data) {
                         point->right->left = point->left;
                     }
                 }
+                list->length--;
                 free(point);
                 return true;
             }
@@ -113,6 +117,11 @@ bool listRemove(List list, pointer data) {
 void listSetCurrentToStart(List list) {
     assert(list != NULL);
     list->current = list->start;
+}
+
+unsigned int listGetLength(List list) {
+    assert(list != NULL);
+    return list->length;
 }
 
 pointer listNext(List list) {
