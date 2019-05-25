@@ -236,24 +236,16 @@ int main(int argc, char *argv[]) {
     }
 
     hostname = gethostname(hostBuffer, sizeof(hostBuffer));
-
     host_entry = gethostbyname(hostBuffer);
-
     ip = inet_ntoa(*((struct in_addr *) host_entry->h_addr_list[0]));
 
     getsockopt(fd_listen, SOL_SOCKET, SO_RCVBUF, (void *) &socket_rcv_size, &st_rcv_len);
-
     getsockopt(fd_listen, SOL_SOCKET, SO_SNDBUF, (void *) &socket_snd_size, &st_snd_len);
 
     rcv_buffer = malloc(socket_rcv_size + 1);
 
     /* Config*/
     if (setsockopt(fd_listen, SOL_SOCKET, SO_REUSEADDR, (char *) &opt, sizeof(opt)) < 0) {
-        perror("setsockopt");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(fd_listen, SOL_SOCKET, SO_RCVLOWAT, (char *) &opt, sizeof(opt)) < 0) {
         perror("setsockopt");
         exit(EXIT_FAILURE);
     }
@@ -368,5 +360,6 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+    free(rcv_buffer);
     listDestroy(&list);
 }
