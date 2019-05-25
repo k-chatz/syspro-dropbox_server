@@ -14,7 +14,6 @@
 
 #define COLOR "\x1B[33m"
 #define RESET "\x1B[0m"
-#define MAX_OPEN_SESSIONS 20
 
 typedef struct session {
     size_t bytes;
@@ -27,8 +26,8 @@ typedef struct client {
     in_port_t port;
 } *Client;
 
-volatile sig_atomic_t sig_int_quit_hup = 0;
-bool quit = false;
+static volatile int quit_request = 0;
+
 List list = NULL;
 struct sockaddr_in listen_in_addr, new_client_in_addr, client_in_addr;
 struct sockaddr *listen_in_addr_ptr = NULL, *new_client_in_addr_ptr = NULL, *client_in_addr_ptr = NULL;
@@ -57,11 +56,9 @@ void readOptions(int argc, char **argv, uint16_t *portNum) {
     }
 }
 
-/**
- * @Signal_handler
- * Interupt or quit action*/
-void sig_int_quit_action(int signal) {
-    sig_int_quit_hup++;
+/* Signal handler. */
+static void hdl(int sig) {
+    quit_request = 1;
 }
 
 void request_handler(int client_fd, void *buffer) {
@@ -114,6 +111,7 @@ void request_handler(int client_fd, void *buffer) {
                         }
                     }
                 }
+                send(client_fd, "LOG_ON_SUCCESS", 14, 0);
             } else {
                 send(client_fd, "ERROR_LOG_ON", 12, 0);
                 fprintf(stderr, "ERROR_LOG_ON\n");
@@ -128,13 +126,13 @@ void request_handler(int client_fd, void *buffer) {
         printf("EXECUTE GET_CLIENTS\n");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 11, sizeof(struct client));
-        clients = listGetLength(list) - 1;
+        clients = listGetLength(list);
         send(client_fd, "CLIENT_LIST", 11, 0);
         send(client_fd, &clients, sizeof(unsigned int), 0);
         listSetCurrentToStart(list);
         while ((client = listNext(list)) != NULL) {
             if (!(c->ip == client->ip && c->port == client->port)) {
-                send(client_fd, &client, sizeof(struct client), 0);
+                send(client_fd, client, sizeof(struct client), 0);
             }
         }
         free(c);
@@ -188,7 +186,6 @@ void request_handler(int client_fd, void *buffer) {
         } else {
             fprintf(stderr, "ERROR_IP_PORT_NOT_FOUND_IN_LIST\n");
             send(client_fd, "ERROR_IP_PORT_NOT_FOUND_IN_LIST", 31, 0);
-            free(c);
         }
         free(c);
     } else {
@@ -198,12 +195,11 @@ void request_handler(int client_fd, void *buffer) {
 }
 
 int main(int argc, char *argv[]) {
-    int opt = 1, fd_listen = 0, fd_new_client = 0, fd_client = 0, activity = 0, fd_max = 0, fd_active = 0, hostname = 0;
-    static struct sigaction quit_action;
-
+    int opt = 1, fd_listen = 0, fd_new_client = 0, fd_client = 0, activity = 0, lfd = 0, fd_active = 0, hostname = 0;
     struct hostent *host_entry;
+    struct sigaction sa;
 
-    Session s[MAX_OPEN_SESSIONS];
+    Session s[FD_SETSIZE];
     void *rcv_buffer = NULL;
     size_t socket_rcv_size = 0, socket_snd_size = 0;
     socklen_t st_rcv_len = 0, st_snd_len = 0, client_len = 0;
@@ -226,14 +222,6 @@ int main(int argc, char *argv[]) {
     memset(listen_in_addr_ptr, 0, sizeof(struct sockaddr));
     memset(new_client_in_addr_ptr, 0, sizeof(struct sockaddr));
     memset(client_in_addr_ptr, 0, sizeof(struct sockaddr));
-
-    /* Set custom signal handler for SIGINT (^c) & SIGQUIT (^\) signals.*/
-    quit_action.sa_handler = sig_int_quit_action;
-    sigfillset(&(quit_action.sa_mask));
-    //quit_action.sa_flags = SA_RESTART;
-    sigaction(SIGINT, &quit_action, NULL);
-    sigaction(SIGQUIT, &quit_action, NULL);
-    sigaction(SIGHUP, &quit_action, NULL);
 
     /* Initialize address*/
     listen_in_addr.sin_family = AF_INET;
@@ -281,14 +269,14 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (fd_listen > fd_max) {
-        fd_max = fd_listen;
+    if (fd_listen > lfd) {
+        lfd = fd_listen;
     }
 
     FD_ZERO(&set);
     FD_SET(fd_listen, &set);
 
-    for (int i = 0; i < MAX_OPEN_SESSIONS; i++) {
+    for (int i = 0; i < FD_SETSIZE; i++) {
         s[i].buffer = NULL;
         s[i].bytes = 0;
         s[i].chunks = 0;
@@ -296,19 +284,34 @@ int main(int argc, char *argv[]) {
 
     listCreate(&list);
 
+    sa.sa_handler = hdl;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
+    // Block SIGINT.
+    sigset_t sigset, oldset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGINT);
+    sigprocmask(SIG_BLOCK, &sigset, &oldset);
+
     printf("Waiting for connections on %s:%d ... \n", ip, portNum);
-    while (!quit) {
-        if (sig_int_quit_hup) {
-            sig_int_quit_hup--;
-            fprintf(stdout, COLOR"C[%d]: exiting ..."RESET"\n", getpid());
-            quit = true;
-        }
+    while (!quit_request) {
         read_fds = set;
-        if ((activity = select(fd_max + 1, &read_fds, NULL, NULL, NULL) < 0) && (errno != EINTR)) {
+        activity = pselect(lfd + 1, &read_fds, NULL, NULL, NULL, &oldset);
+        if (activity < 0 && (errno != EINTR)) {
             perror("select");
+        } else if (activity == 0) {
+            fprintf(stdout, "There is no activity, so continue at the next loop ...\n");
+            continue;
         }
 
-        for (fd_active = 0; fd_active <= fd_max; fd_active++) {
+        if (quit_request) {
+            fprintf(stdout, "C[%d]: quiting ...""\n", getpid());
+            break;
+        }
+
+        for (fd_active = 0; fd_active <= lfd; fd_active++) {
             if (FD_ISSET(fd_active, &read_fds)) {
                 if (fd_active == fd_listen) {
                     if ((fd_new_client = accept(fd_active, new_client_in_addr_ptr, &client_len)) < 0) {
@@ -319,10 +322,10 @@ int main(int argc, char *argv[]) {
                            ntohs(new_client_in_addr.sin_port),
                            fd_new_client);
                     FD_SET(fd_new_client, &set);
-                    if (fd_new_client > fd_max) {
-                        fd_max = fd_new_client;
+                    if (fd_new_client > lfd) {
+                        lfd = fd_new_client;
                     }
-                    if (fd_new_client <= MAX_OPEN_SESSIONS) {
+                    if (fd_new_client <= FD_SETSIZE) {
                         s[fd_new_client].buffer = malloc(1);
                         s[fd_new_client].bytes = 1;
                         s[fd_new_client].chunks = 0;
@@ -341,8 +344,8 @@ int main(int argc, char *argv[]) {
                         request_handler(fd_new_client, s[fd_active].buffer);
                         shutdown(fd_new_client, SHUT_WR);
                         FD_CLR(fd_active, &set);
-                        if (fd_active == fd_max) {
-                            fd_max--;
+                        if (fd_active == lfd) {
+                            lfd--;
                         }
                         close(fd_active);
                         free(s[fd_active].buffer);
