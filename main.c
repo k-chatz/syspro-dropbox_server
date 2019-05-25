@@ -173,12 +173,13 @@ void request_handler(int client_fd, void *buffer) {
                         } else {
                             printf("Connect to client %s:%d successfully!\n", inet_ntoa(client_in_addr.sin_addr),
                                    ntohs(client_in_addr.sin_port));
-                            send(fd_client, "USER_ON", 7, 0);
+                            send(fd_client, "USER_OFF", 8, 0);
                             send(fd_client, c, sizeof(struct client), 0);
                             close(fd_client);
                         }
                     }
                 }
+                send(fd_client, "LOG_OFF_SUCCESS", 15, 0);
             } else {
                 fprintf(stderr, "ERROR_NOT_REMOVED\n");
                 send(client_fd, "ERROR_NOT_REMOVED", 17, 0);
