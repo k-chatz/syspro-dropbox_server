@@ -142,7 +142,7 @@ void requestHandler(int client_fd, void *buffer) {
         printf("EXECUTE GET_CLIENTS\n");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 11, sizeof(struct client));
-        clients = listGetLength(list);
+        clients = listGetLength(list) - 1;
         send(client_fd, "CLIENT_LIST", 11, 0);
         send(client_fd, &clients, sizeof(unsigned int), 0);
         listSetCurrentToStart(list);
