@@ -56,12 +56,47 @@ void readOptions(int argc, char **argv, uint16_t *portNum) {
     }
 }
 
-/* Signal handler. */
+/**
+ * Signal handler.*/
 static void hdl(int sig) {
     quit_request = 1;
 }
 
-void request_handler(int client_fd, void *buffer) {
+/**
+ * Open TCP connection.*/
+int openConnection(in_addr_t ip, in_port_t port) {
+    struct sockaddr_in in_addr;
+    struct sockaddr *in_addr_ptr = NULL;
+    int fd = 0;
+
+    in_addr_ptr = (struct sockaddr *) &in_addr;
+    memset(in_addr_ptr, 0, sizeof(struct sockaddr));
+
+    /* Create socket */
+    if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
+        perror("socket");
+        return 0;
+    }
+
+    in_addr.sin_family = AF_INET;
+    in_addr.sin_addr.s_addr = ip;
+    in_addr.sin_port = port;
+
+    printf("Connecting socket %d to remote host %s:%d ...\n", fd, inet_ntoa(in_addr.sin_addr), ntohs(in_addr.sin_port));
+
+    /* Initiate connection */
+    if (connect(fd, in_addr_ptr, sizeof(struct sockaddr)) < 0) {
+        perror("connect");
+        return 0;
+    }
+    printf("::Connection to remote host %s:%d established::\n", inet_ntoa(in_addr.sin_addr),
+           ntohs(in_addr.sin_port));
+    return fd;
+}
+
+/**
+ * Handle requests.*/
+void requestHandler(int client_fd, void *buffer) {
     bool found = false;
     Client c = NULL, client = NULL;
     unsigned int clients = 0;
@@ -85,26 +120,7 @@ void request_handler(int client_fd, void *buffer) {
                 listSetCurrentToStart(list);
                 while ((client = listNext(list)) != NULL) {
                     if (!(c->ip == client->ip && c->port == client->port)) {
-
-                        /* Create socket */
-                        if ((fd_client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-                            perror("socket");
-                        }
-                        client_in_addr.sin_family = AF_INET;
-                        client_in_addr.sin_addr.s_addr = client->ip;
-                        client_in_addr.sin_port = client->port;
-
-                        printf("Connecting to host %s:%d in order to inform that client %s:%d is logged in ...\n",
-                               inet_ntoa(client_in_addr.sin_addr), ntohs(client_in_addr.sin_port),
-                               inet_ntoa(new_client_in_addr.sin_addr), ntohs(new_client_in_addr.sin_port)
-                        );
-
-                        /* Initiate connection */
-                        if (connect(fd_client, client_in_addr_ptr, sizeof(struct sockaddr)) < 0) {
-                            perror("connect");
-                        } else {
-                            printf("Connect to client %s:%d successfully!\n", inet_ntoa(client_in_addr.sin_addr),
-                                   ntohs(client_in_addr.sin_port));
+                        if ((fd_client = openConnection(client->ip, client->port)) > 0) {
                             send(fd_client, "USER_ON", 7, 0);
                             send(fd_client, c, sizeof(struct client), 0);
                             close(fd_client);
@@ -153,26 +169,7 @@ void request_handler(int client_fd, void *buffer) {
                 listSetCurrentToStart(list);
                 while ((client = listNext(list)) != NULL) {
                     if (!(c->ip == client->ip && c->port == client->port)) {
-
-                        /* Create socket */
-                        if ((fd_client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-                            perror("socket");
-                        }
-                        client_in_addr.sin_family = AF_INET;
-                        client_in_addr.sin_addr.s_addr = client->ip;
-                        client_in_addr.sin_port = client->port;
-
-                        printf("Connecting to host %s:%d in order to inform that client %s:%d leave ...\n",
-                               inet_ntoa(client_in_addr.sin_addr), ntohs(client_in_addr.sin_port),
-                               inet_ntoa(new_client_in_addr.sin_addr), ntohs(new_client_in_addr.sin_port)
-                        );
-
-                        /* Initiate connection */
-                        if (connect(fd_client, client_in_addr_ptr, sizeof(struct sockaddr)) < 0) {
-                            perror("connect");
-                        } else {
-                            printf("Connect to client %s:%d successfully!\n", inet_ntoa(client_in_addr.sin_addr),
-                                   ntohs(client_in_addr.sin_port));
+                        if ((fd_client = openConnection(client->ip, client->port)) > 0) {
                             send(fd_client, "USER_OFF", 8, 0);
                             send(fd_client, c, sizeof(struct client), 0);
                             close(fd_client);
@@ -334,7 +331,7 @@ int main(int argc, char *argv[]) {
                                s[fd_active].chunks, fd_active);
                         printf(COLOR"%s\n"RESET"\n", (char *) s[fd_active].buffer);
                         shutdown(fd_new_client, SHUT_RD);
-                        request_handler(fd_new_client, s[fd_active].buffer);
+                        requestHandler(fd_new_client, s[fd_active].buffer);
                         shutdown(fd_new_client, SHUT_WR);
                         FD_CLR(fd_active, &set);
                         if (fd_active == lfd) {
