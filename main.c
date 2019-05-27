@@ -368,9 +368,9 @@ int main(int argc, char *argv[]) {
                                s[fd_active].bytes - 1,
                                s[fd_active].chunks, fd_active);
                         printf(COLOR"%s\n"RESET"\n", (char *) s[fd_active].buffer);
-                        shutdown(fd_new_client, SHUT_RD);
-                        requestHandler(fd_new_client, s[fd_active].buffer);
-                        shutdown(fd_new_client, SHUT_WR);
+                        shutdown(fd_active, SHUT_RD);
+                        requestHandler(fd_active, s[fd_active].buffer);
+                        shutdown(fd_active, SHUT_WR);
                         FD_CLR(fd_active, &set);
                         if (fd_active == lfd) {
                             lfd--;
