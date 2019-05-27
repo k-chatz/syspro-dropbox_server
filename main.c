@@ -103,7 +103,7 @@ void requestHandler(int client_fd, void *buffer) {
     int fd_client = 0;
 
     if (strncmp(buffer, "LOG_ON", 6) == 0) {
-        printf("EXECUTE LOG_ON\n");
+        printf("REQUEST: LOG_ON\n");
         c = malloc(sizeof(struct client));
         if (c == NULL) {
             perror("malloc");
@@ -128,6 +128,7 @@ void requestHandler(int client_fd, void *buffer) {
                     }
                 }
                 send(client_fd, "LOG_ON_SUCCESS", 14, 0);
+                fprintf(stdout, "LOG_ON_SUCCESS\n");
             } else {
                 send(client_fd, "ERROR_LOG_ON", 12, 0);
                 fprintf(stderr, "ERROR_LOG_ON\n");
@@ -139,21 +140,29 @@ void requestHandler(int client_fd, void *buffer) {
             free(c);
         }
     } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
-        printf("EXECUTE GET_CLIENTS\n");
+        printf("REQUEST: GET_CLIENTS\n");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 11, sizeof(struct client));
         clients = listGetLength(list) - 1;
         send(client_fd, "CLIENT_LIST", 11, 0);
+        fprintf(stdout, "CLIENT_LIST ");
         send(client_fd, &clients, sizeof(unsigned int), 0);
+        fprintf(stdout, "%d ", clients);
         listSetCurrentToStart(list);
         while ((client = listNext(list)) != NULL) {
             if (!(c->ip == client->ip && c->port == client->port)) {
                 send(client_fd, client, sizeof(struct client), 0);
+                struct sockaddr_in addr;
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = client->ip;
+                addr.sin_port = client->port;
+                fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(c->port));
             }
         }
+        fprintf(stdout, "\n");
         free(c);
     } else if (strncmp(buffer, "LOG_OFF", 7) == 0) {
-        printf("EXECUTE LOG_OFF\n");
+        printf("REQUEST: LOG_OFF\n");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 7, sizeof(struct client));
         listSetCurrentToStart(list);
@@ -171,24 +180,31 @@ void requestHandler(int client_fd, void *buffer) {
                     if (!(c->ip == client->ip && c->port == client->port)) {
                         if ((fd_client = openConnection(client->ip, client->port)) > 0) {
                             send(fd_client, "USER_OFF", 8, 0);
+                            fprintf(stdout, "USER_OFF ");
                             send(fd_client, c, sizeof(struct client), 0);
+                            struct sockaddr_in addr;
+                            addr.sin_family = AF_INET;
+                            addr.sin_addr.s_addr = client->ip;
+                            addr.sin_port = client->port;
+                            fprintf(stdout, "<%s, %d>\n", inet_ntoa(addr.sin_addr), ntohs(c->port));
                             close(fd_client);
                         }
                     }
                 }
                 send(fd_client, "LOG_OFF_SUCCESS", 15, 0);
+                fprintf(stdout, "LOG_OFF_SUCCESS\n");
             } else {
-                fprintf(stderr, "ERROR_NOT_REMOVED\n");
                 send(client_fd, "ERROR_NOT_REMOVED", 17, 0);
+                fprintf(stderr, "ERROR_NOT_REMOVED\n");
             }
         } else {
-            fprintf(stderr, "ERROR_IP_PORT_NOT_FOUND_IN_LIST\n");
             send(client_fd, "ERROR_IP_PORT_NOT_FOUND_IN_LIST", 31, 0);
+            fprintf(stderr, "ERROR_IP_PORT_NOT_FOUND_IN_LIST\n");
         }
         free(c);
     } else {
-        fprintf(stderr, "UNKNOWN_COMMAND\n");
         send(client_fd, "UNKNOWN_COMMAND", 15, 0);
+        fprintf(stderr, "UNKNOWN_COMMAND\n");
     }
 }
 
@@ -196,7 +212,7 @@ int main(int argc, char *argv[]) {
     int opt = 1, fd_listen = 0, fd_new_client = 0, fd_client = 0, activity = 0, lfd = 0, fd_active = 0, hostname = 0;
     struct hostent *host_entry;
     struct sigaction sa;
-
+    struct timespec timeout;
     Session s[FD_SETSIZE];
     void *rcv_buffer = NULL;
     size_t socket_rcv_size = 0, socket_snd_size = 0;
@@ -210,7 +226,6 @@ int main(int argc, char *argv[]) {
 
     st_rcv_len = sizeof(socket_rcv_size);
     st_snd_len = sizeof(socket_snd_size);
-
     client_len = sizeof(struct sockaddr);
 
     listen_in_addr_ptr = (struct sockaddr *) &listen_in_addr;
@@ -285,14 +300,36 @@ int main(int argc, char *argv[]) {
     sigaddset(&sigset, SIGINT);
     sigprocmask(SIG_BLOCK, &sigset, &oldset);
 
+    timeout.tv_sec = 5;
+    timeout.tv_nsec = 0;
+
     printf("Waiting for connections on %s:%d ... \n", ip, portNum);
     while (!quit_request) {
         read_fds = set;
-        activity = pselect(lfd + 1, &read_fds, NULL, NULL, NULL, &oldset);
+        activity = pselect(lfd + 1, &read_fds, NULL, NULL, &timeout, &oldset);
         if (activity < 0 && (errno != EINTR)) {
             perror("select");
+            continue;
         } else if (activity == 0) {
-            fprintf(stdout, "There is no activity, so continue at the next loop ...\n");
+            for (int i = 0; i < FD_SETSIZE; i++) {
+                if (s[i].buffer != NULL) {
+                    fprintf(stdout, "The request timed out, connection on socket %d is about to be closed ...\n", i);
+                    printf("::%ld bytes were transferred into %d different chunks on socket %d::\n",
+                           s[i].bytes - 1,
+                           s[i].chunks, i);
+                    printf(COLOR"%s\n"RESET"\n", (char *) s[i].buffer);
+                    shutdown(i, SHUT_RD);
+                    requestHandler(i, s[i].buffer);
+                    shutdown(i, SHUT_WR);
+                    FD_CLR(i, &set);
+                    if (i == lfd) {
+                        lfd--;
+                    }
+                    close(i);
+                    free(s[i].buffer);
+                    s[i].buffer = NULL;
+                };
+            }
             continue;
         }
 
@@ -320,6 +357,7 @@ int main(int argc, char *argv[]) {
                         s[fd_new_client].bytes = 1;
                         s[fd_new_client].chunks = 0;
                     } else {
+                        send(fd_new_client, "HOST_IS_TOO_BUSY", 16, 0);
                         close(fd_new_client);
                     }
                 } else {
