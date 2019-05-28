@@ -82,7 +82,7 @@ int openConnection(in_addr_t ip, in_port_t port) {
     in_addr.sin_addr.s_addr = ip;
     in_addr.sin_port = port;
 
-    printf("Connecting socket %d to remote host %s:%d ...\n", fd, inet_ntoa(in_addr.sin_addr), ntohs(in_addr.sin_port));
+    printf("::Connecting socket %d to remote host %s:%d::\n", fd, inet_ntoa(in_addr.sin_addr), ntohs(in_addr.sin_port));
 
     /* Initiate connection */
     if (connect(fd, in_addr_ptr, sizeof(struct sockaddr)) < 0) {
@@ -92,6 +92,14 @@ int openConnection(in_addr_t ip, in_port_t port) {
     printf("::Connection to remote host %s:%d established::\n", inet_ntoa(in_addr.sin_addr),
            ntohs(in_addr.sin_port));
     return fd;
+}
+
+void printClientTuple(Client c) {
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = c->ip;
+    addr.sin_port = c->port;
+    fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(c->port));
 }
 
 /**
@@ -122,7 +130,10 @@ void requestHandler(int client_fd, void *buffer) {
                     if (!(c->ip == client->ip && c->port == client->port)) {
                         if ((fd_client = openConnection(client->ip, client->port)) > 0) {
                             send(fd_client, "USER_ON", 7, 0);
+                            fprintf(stdout, "USER_ON ");
                             send(fd_client, c, sizeof(struct client), 0);
+                            printClientTuple(c);
+                            fprintf(stdout, "\n");
                             close(fd_client);
                         }
                     }
@@ -305,7 +316,7 @@ int main(int argc, char *argv[]) {
     sigaddset(&sigset, SIGINT);
     sigprocmask(SIG_BLOCK, &sigset, &oldset);
 
-    printf("Waiting for connections on %s:%d ... \n", currentHostStrIp, portNum);
+    printf("::Waiting for connections on %s:%d::\n", currentHostStrIp, portNum);
     while (!quit_request) {
         read_fds = set;
         activity = pselect(lfd + 1, &read_fds, NULL, NULL, &timeout, &oldset);
@@ -347,7 +358,7 @@ int main(int argc, char *argv[]) {
                         perror("accept");
                         break;
                     }
-                    printf("\n::Accept new client (%s:%d) on socket %d::\n", inet_ntoa(new_client_in_addr.sin_addr),
+                    printf("::Accept new client (%s:%d) on socket %d::\n", inet_ntoa(new_client_in_addr.sin_addr),
                            ntohs(new_client_in_addr.sin_port),
                            fd_new_client);
                     FD_SET(fd_new_client, &set);
@@ -369,7 +380,7 @@ int main(int argc, char *argv[]) {
                         printf("::%ld bytes were transferred into %d different chunks on socket %d::\n",
                                s[fd_active].bytes - 1,
                                s[fd_active].chunks, fd_active);
-                        printf(COLOR"%s\n"RESET"\n", (char *) s[fd_active].buffer);
+                        printf("::"COLOR"%s"RESET"::\n", (char *) s[fd_active].buffer);
                         shutdown(fd_active, SHUT_RD);
                         requestHandler(fd_active, s[fd_active].buffer);
                         shutdown(fd_active, SHUT_WR);
