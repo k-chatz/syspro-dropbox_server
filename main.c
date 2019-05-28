@@ -31,7 +31,7 @@ static volatile int quit_request = 0;
 List list = NULL;
 struct sockaddr_in listen_in_addr, new_client_in_addr, client_in_addr;
 struct sockaddr *listen_in_addr_ptr = NULL, *new_client_in_addr_ptr = NULL, *client_in_addr_ptr = NULL;
-char *ip = NULL, hostBuffer[256];
+char *currentHostStrIp = NULL, hostBuffer[256];
 
 void wrongOptionValue(char *opt, char *val) {
     fprintf(stderr, "\nWrong value [%s] for option '%s'\n", val, opt);
@@ -156,7 +156,7 @@ void requestHandler(int client_fd, void *buffer) {
                 addr.sin_family = AF_INET;
                 addr.sin_addr.s_addr = client->ip;
                 addr.sin_port = client->port;
-                fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(c->port));
+                fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(client->port));
             }
         }
         fprintf(stdout, "\n");
@@ -210,9 +210,10 @@ void requestHandler(int client_fd, void *buffer) {
 
 int main(int argc, char *argv[]) {
     int opt = 1, fd_listen = 0, fd_new_client = 0, fd_client = 0, activity = 0, lfd = 0, fd_active = 0, hostname = 0;
-    struct hostent *host_entry;
+    struct hostent *hostEntry;
     struct sigaction sa;
     struct timespec timeout;
+    struct in_addr currentHostAddr;
     Session s[FD_SETSIZE];
     void *rcv_buffer = NULL;
     size_t socket_rcv_size = 0, socket_snd_size = 0;
@@ -223,6 +224,9 @@ int main(int argc, char *argv[]) {
 
     /* Read argument options from command line*/
     readOptions(argc, argv, &portNum);
+
+    timeout.tv_sec = 5;
+    timeout.tv_nsec = 0;
 
     st_rcv_len = sizeof(socket_rcv_size);
     st_snd_len = sizeof(socket_snd_size);
@@ -248,8 +252,9 @@ int main(int argc, char *argv[]) {
     }
 
     hostname = gethostname(hostBuffer, sizeof(hostBuffer));
-    host_entry = gethostbyname(hostBuffer);
-    ip = inet_ntoa(*((struct in_addr *) host_entry->h_addr_list[0]));
+    hostEntry = gethostbyname(hostBuffer);
+    currentHostAddr = *((struct in_addr *) hostEntry->h_addr_list[0]);
+    currentHostStrIp = strdup(inet_ntoa(currentHostAddr));
 
     getsockopt(fd_listen, SOL_SOCKET, SO_RCVBUF, (void *) &socket_rcv_size, &st_rcv_len);
     getsockopt(fd_listen, SOL_SOCKET, SO_SNDBUF, (void *) &socket_snd_size, &st_snd_len);
@@ -300,10 +305,7 @@ int main(int argc, char *argv[]) {
     sigaddset(&sigset, SIGINT);
     sigprocmask(SIG_BLOCK, &sigset, &oldset);
 
-    timeout.tv_sec = 5;
-    timeout.tv_nsec = 0;
-
-    printf("Waiting for connections on %s:%d ... \n", ip, portNum);
+    printf("Waiting for connections on %s:%d ... \n", currentHostStrIp, portNum);
     while (!quit_request) {
         read_fds = set;
         activity = pselect(lfd + 1, &read_fds, NULL, NULL, &timeout, &oldset);
