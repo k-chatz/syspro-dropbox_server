@@ -111,12 +111,13 @@ void requestHandler(int client_fd, void *buffer) {
     int fd_client = 0;
 
     if (strncmp(buffer, "LOG_ON", 6) == 0) {
-        printf("REQUEST: LOG_ON\n");
+        printf("REQUEST: LOG_ON ");
         c = malloc(sizeof(struct client));
         if (c == NULL) {
             perror("malloc");
         }
         memcpy(c, buffer + 6, sizeof(struct client));
+        printClientTuple(c);
         listSetCurrentToStart(list);
         while ((client = listNext(list)) != NULL) {
             if (c->ip == client->ip && c->port == client->port) {
@@ -151,9 +152,10 @@ void requestHandler(int client_fd, void *buffer) {
             free(c);
         }
     } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
-        printf("REQUEST: GET_CLIENTS\n");
+        printf("REQUEST: GET_CLIENTS ");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 11, sizeof(struct client));
+        printClientTuple(c);
         clients = listGetLength(list) - 1;
         send(client_fd, "CLIENT_LIST", 11, 0);
         fprintf(stdout, "CLIENT_LIST ");
@@ -176,6 +178,7 @@ void requestHandler(int client_fd, void *buffer) {
         printf("REQUEST: LOG_OFF\n");
         c = malloc(sizeof(struct client));
         memcpy(c, buffer + 7, sizeof(struct client));
+        printClientTuple(c);
         listSetCurrentToStart(list);
         while ((client = listNext(list)) != NULL) {
             if (c->ip == client->ip && c->port == client->port) {
