@@ -224,7 +224,7 @@ void requestHandler(int client_fd, void *buffer) {
 }
 
 int main(int argc, char *argv[]) {
-    int opt = 1, fd_listen = 0, fd_new_client = 0, fd_client = 0, activity = 0, lfd = 0, fd_active = 0, hostname = 0;
+    int opt = 1, fd_listen = 0, fd_new_client = 0, activity = 0, lfd = 0, fd_active = 0;
     struct hostent *hostEntry;
     struct sigaction sa;
     struct timespec timeout;
@@ -266,7 +266,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    hostname = gethostname(hostBuffer, sizeof(hostBuffer));
+    gethostname(hostBuffer, sizeof(hostBuffer));
     hostEntry = gethostbyname(hostBuffer);
     currentHostAddr = *((struct in_addr *) hostEntry->h_addr_list[0]);
     currentHostStrIp = strdup(inet_ntoa(currentHostAddr));
