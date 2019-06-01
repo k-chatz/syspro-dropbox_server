@@ -151,6 +151,7 @@ void requestHandler(int client_fd, void *buffer) {
             fprintf(stderr, "ALREADY_LOGGED_IN\n");
             free(c);
         }
+        fprintf(stdout, "\n");
     } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
         printf("REQUEST: GET_CLIENTS ");
         c = malloc(sizeof(struct client));
@@ -239,7 +240,7 @@ int main(int argc, char *argv[]) {
     /* Read argument options from command line*/
     readOptions(argc, argv, &portNum);
 
-    timeout.tv_sec = 5;
+    timeout.tv_sec = 3600;
     timeout.tv_nsec = 0;
 
     st_rcv_len = sizeof(socket_rcv_size);
@@ -297,9 +298,6 @@ int main(int argc, char *argv[]) {
         lfd = fd_listen;
     }
 
-    FD_ZERO(&set);
-    FD_SET(fd_listen, &set);
-
     for (int i = 0; i < FD_SETSIZE; i++) {
         s[i].buffer = NULL;
         s[i].bytes = 0;
@@ -318,6 +316,9 @@ int main(int argc, char *argv[]) {
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGINT);
     sigprocmask(SIG_BLOCK, &sigset, &oldset);
+
+    FD_ZERO(&set);
+    FD_SET(fd_listen, &set);
 
     printf("::Waiting for connections on %s:%d::\n", currentHostStrIp, portNum);
     while (!quit_request) {
