@@ -11,6 +11,8 @@
 #include <signal.h>
 #include <netdb.h>
 #include "list.h"
+#include "handler.h"
+#include "options.h"
 
 #define COLOR "\x1B[33m"
 #define RESET "\x1B[0m"
@@ -21,11 +23,6 @@ typedef struct session {
     int chunks;
 } Session;
 
-typedef struct client {
-    in_addr_t ip;
-    in_port_t port;
-} *Client;
-
 static volatile int quit_request = 0;
 
 List list = NULL;
@@ -33,194 +30,10 @@ struct sockaddr_in listen_in_addr, new_client_in_addr, client_in_addr;
 struct sockaddr *listen_in_addr_ptr = NULL, *new_client_in_addr_ptr = NULL, *client_in_addr_ptr = NULL;
 char *currentHostStrIp = NULL, hostBuffer[256];
 
-void wrongOptionValue(char *opt, char *val) {
-    fprintf(stderr, "\nWrong value [%s] for option '%s'\n", val, opt);
-    exit(EXIT_FAILURE);
-}
-
-/**
- * Read options from command line*/
-void readOptions(int argc, char **argv, uint16_t *portNum) {
-    int i;
-    char *opt, *optVal;
-    for (i = 1; i < argc; ++i) {
-        opt = argv[i];
-        optVal = argv[i + 1];
-        if (strcmp(opt, "-p") == 0) {
-            if (optVal != NULL && optVal[0] != '-') {
-                *portNum = (uint16_t) strtol(optVal, NULL, 10);
-            } else {
-                wrongOptionValue(opt, optVal);
-            }
-        }
-    }
-}
-
 /**
  * Signal handler.*/
 static void hdl(int sig) {
     quit_request = 1;
-}
-
-/**
- * Open TCP connection.*/
-int openConnection(in_addr_t ip, in_port_t port) {
-    struct sockaddr_in in_addr;
-    struct sockaddr *in_addr_ptr = NULL;
-    int fd = 0;
-
-    in_addr_ptr = (struct sockaddr *) &in_addr;
-    memset(in_addr_ptr, 0, sizeof(struct sockaddr));
-
-    /* Create socket */
-    if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-        perror("socket");
-        return 0;
-    }
-
-    in_addr.sin_family = AF_INET;
-    in_addr.sin_addr.s_addr = ip;
-    in_addr.sin_port = port;
-
-    printf("::Connecting socket %d to remote host %s:%d::\n", fd, inet_ntoa(in_addr.sin_addr), ntohs(in_addr.sin_port));
-
-    /* Initiate connection */
-    if (connect(fd, in_addr_ptr, sizeof(struct sockaddr)) < 0) {
-        perror("connect");
-        return 0;
-    }
-    printf("::Connection to remote host %s:%d established::\n", inet_ntoa(in_addr.sin_addr),
-           ntohs(in_addr.sin_port));
-    return fd;
-}
-
-void printClientTuple(Client c) {
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = c->ip;
-    addr.sin_port = c->port;
-    fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(c->port));
-}
-
-/**
- * Handle requests.*/
-void requestHandler(int client_fd, void *buffer) {
-    bool found = false;
-    Client c = NULL, client = NULL;
-    unsigned int clients = 0;
-    int fd_client = 0;
-
-    if (strncmp(buffer, "LOG_ON", 6) == 0) {
-        printf("REQUEST: LOG_ON ");
-        c = malloc(sizeof(struct client));
-        if (c == NULL) {
-            perror("malloc");
-        }
-        memcpy(c, buffer + 6, sizeof(struct client));
-        printClientTuple(c);
-        listSetCurrentToStart(list);
-        while ((client = listNext(list)) != NULL) {
-            if (c->ip == client->ip && c->port == client->port) {
-                found = true;
-            }
-        }
-        if (!found) {
-            if (listInsert(list, c)) {
-                listSetCurrentToStart(list);
-                while ((client = listNext(list)) != NULL) {
-                    if (!(c->ip == client->ip && c->port == client->port)) {
-                        if ((fd_client = openConnection(client->ip, client->port)) > 0) {
-                            send(fd_client, "USER_ON", 7, 0);
-                            fprintf(stdout, "USER_ON ");
-                            send(fd_client, c, sizeof(struct client), 0);
-                            printClientTuple(c);
-                            fprintf(stdout, "\n");
-                            close(fd_client);
-                        }
-                    }
-                }
-                send(client_fd, "LOG_ON_SUCCESS", 14, 0);
-                fprintf(stdout, "LOG_ON_SUCCESS\n");
-            } else {
-                send(client_fd, "ERROR_LOG_ON", 12, 0);
-                fprintf(stderr, "ERROR_LOG_ON\n");
-                free(c);
-            }
-        } else {
-            send(client_fd, "ALREADY_LOGGED_IN", 17, 0);
-            fprintf(stderr, "ALREADY_LOGGED_IN\n");
-            free(c);
-        }
-        fprintf(stdout, "\n");
-    } else if (strncmp(buffer, "GET_CLIENTS", 11) == 0) {
-        printf("REQUEST: GET_CLIENTS ");
-        c = malloc(sizeof(struct client));
-        memcpy(c, buffer + 11, sizeof(struct client));
-        printClientTuple(c);
-        clients = listGetLength(list) - 1;
-        send(client_fd, "CLIENT_LIST", 11, 0);
-        fprintf(stdout, "CLIENT_LIST ");
-        send(client_fd, &clients, sizeof(unsigned int), 0);
-        fprintf(stdout, "%d ", clients);
-        listSetCurrentToStart(list);
-        while ((client = listNext(list)) != NULL) {
-            if (!(c->ip == client->ip && c->port == client->port)) {
-                send(client_fd, client, sizeof(struct client), 0);
-                struct sockaddr_in addr;
-                addr.sin_family = AF_INET;
-                addr.sin_addr.s_addr = client->ip;
-                addr.sin_port = client->port;
-                fprintf(stdout, "<%s, %d> ", inet_ntoa(addr.sin_addr), ntohs(client->port));
-            }
-        }
-        fprintf(stdout, "\n");
-        free(c);
-    } else if (strncmp(buffer, "LOG_OFF", 7) == 0) {
-        printf("REQUEST: LOG_OFF\n");
-        c = malloc(sizeof(struct client));
-        memcpy(c, buffer + 7, sizeof(struct client));
-        printClientTuple(c);
-        listSetCurrentToStart(list);
-        while ((client = listNext(list)) != NULL) {
-            if (c->ip == client->ip && c->port == client->port) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            listSetCurrentToStart(list);
-            if (listRemove(list, client)) {
-                listSetCurrentToStart(list);
-                while ((client = listNext(list)) != NULL) {
-                    if (!(c->ip == client->ip && c->port == client->port)) {
-                        if ((fd_client = openConnection(client->ip, client->port)) > 0) {
-                            send(fd_client, "USER_OFF", 8, 0);
-                            fprintf(stdout, "USER_OFF ");
-                            send(fd_client, c, sizeof(struct client), 0);
-                            struct sockaddr_in addr;
-                            addr.sin_family = AF_INET;
-                            addr.sin_addr.s_addr = client->ip;
-                            addr.sin_port = client->port;
-                            fprintf(stdout, "<%s, %d>\n", inet_ntoa(addr.sin_addr), ntohs(c->port));
-                            close(fd_client);
-                        }
-                    }
-                }
-                send(fd_client, "LOG_OFF_SUCCESS", 15, 0);
-                fprintf(stdout, "LOG_OFF_SUCCESS\n");
-            } else {
-                send(client_fd, "ERROR_NOT_REMOVED", 17, 0);
-                fprintf(stderr, "ERROR_NOT_REMOVED\n");
-            }
-        } else {
-            send(client_fd, "ERROR_IP_PORT_NOT_FOUND_IN_LIST", 31, 0);
-            fprintf(stderr, "ERROR_IP_PORT_NOT_FOUND_IN_LIST\n");
-        }
-        free(c);
-    } else {
-        send(client_fd, "UNKNOWN_COMMAND", 15, 0);
-        fprintf(stderr, "UNKNOWN_COMMAND\n");
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -336,7 +149,7 @@ int main(int argc, char *argv[]) {
                            s[i].chunks, i);
                     printf(COLOR"%s\n"RESET"\n", (char *) s[i].buffer);
                     shutdown(i, SHUT_RD);
-                    requestHandler(i, s[i].buffer);
+                    handler(i, s[i].buffer);
                     shutdown(i, SHUT_WR);
                     FD_CLR(i, &set);
                     if (i == lfd) {
@@ -386,7 +199,7 @@ int main(int argc, char *argv[]) {
                                s[fd_active].chunks, fd_active);
                         printf("::"COLOR"%s"RESET"::\n", (char *) s[fd_active].buffer);
                         shutdown(fd_active, SHUT_RD);
-                        requestHandler(fd_active, s[fd_active].buffer);
+                        handler(fd_active, s[fd_active].buffer);
                         shutdown(fd_active, SHUT_WR);
                         FD_CLR(fd_active, &set);
                         if (fd_active == lfd) {
